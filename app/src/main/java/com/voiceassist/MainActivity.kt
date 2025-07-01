@@ -29,6 +29,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var messageAdapter: MessageAdapter
     private lateinit var speechRecognizer: SpeechRecognizer
     
+    // Added retry counter to prevent infinite retry loops
+    private var recognizerRetryCount = 0
+    private val MAX_RETRY_COUNT = 3
     private val RECORD_AUDIO_REQUEST_CODE = 101
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -80,6 +83,8 @@ class MainActivity : AppCompatActivity() {
                 binding.statusText.setText(R.string.listening)
                 binding.voiceProgress.visibility = View.VISIBLE
                 binding.voiceButton.setImageResource(android.R.drawable.ic_media_pause)
+                // Reset retry counter when recognition starts successfully
+                recognizerRetryCount = 0
             }
 
             override fun onBeginningOfSpeech() {
@@ -98,21 +103,100 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onError(error: Int) {
-                val errorMessage = when (error) {
-                    SpeechRecognizer.ERROR_AUDIO -> "Audio recording error"
-                    SpeechRecognizer.ERROR_CLIENT -> "Client side error"
-                    SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Insufficient permissions"
-                    SpeechRecognizer.ERROR_NETWORK -> "Network error"
-                    SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Network timeout"
-                    SpeechRecognizer.ERROR_NO_MATCH -> "No speech detected"
-                    SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Speech service busy"
-                    SpeechRecognizer.ERROR_SERVER -> "Server error"
-                    SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "No speech input"
-                    else -> "Unknown error"
+                // Log the error but don't show it to the user unless it's persistent
+                when (error) {
+                    SpeechRecognizer.ERROR_AUDIO -> {
+                        // Just restart listening for audio errors
+                        binding.voiceProgress.postDelayed({
+                            if (viewModel.isListening.value == true) {
+                                recreateSpeechRecognizer()
+                                startListening()
+                            }
+                        }, 500)
+                    }
+                    SpeechRecognizer.ERROR_CLIENT -> {
+                        // Handle client side error by restarting the recognizer after a short delay
+                        if (recognizerRetryCount < MAX_RETRY_COUNT) {
+                            recognizerRetryCount++
+                            binding.voiceProgress.postDelayed({
+                                if (viewModel.isListening.value == true) {
+                                    recreateSpeechRecognizer()
+                                    startListening()
+                                }
+                            }, 800)
+                        } else {
+                            // Only show error after multiple failures
+                            stopListening()
+                            // Reset retry count for next attempt
+                            recognizerRetryCount = 0
+                        }
+                    }
+                    SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> {
+                        stopListening()
+                        requestPermission()
+                    }
+                    SpeechRecognizer.ERROR_NETWORK,
+                    SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> {
+                        // Silently retry for network issues
+                        binding.voiceProgress.postDelayed({
+                            if (viewModel.isListening.value == true) {
+                                startListening()
+                            }
+                        }, 1000)
+                    }
+                    SpeechRecognizer.ERROR_NO_MATCH -> {
+                        // If no match is found, restart listening without showing an error
+                        binding.voiceProgress.postDelayed({
+                            if (viewModel.isListening.value == true) {
+                                startListening()
+                            }
+                        }, 300)
+                    }
+                    SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> {
+                        // If recognizer is busy, release it and create a new one
+                        recreateSpeechRecognizer()
+                        binding.voiceProgress.postDelayed({
+                            if (viewModel.isListening.value == true) {
+                                startListening()
+                            }
+                        }, 300)
+                    }
+                    SpeechRecognizer.ERROR_SERVER -> {
+                        // Retry once for server errors, then show error
+                        if (recognizerRetryCount < 1) {
+                            recognizerRetryCount++
+                            binding.voiceProgress.postDelayed({
+                                if (viewModel.isListening.value == true) {
+                                    startListening()
+                                }
+                            }, 1000)
+                        } else {
+                            stopListening()
+                            recognizerRetryCount = 0
+                        }
+                    }
+                    SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> {
+                        // Just restart listening for speech timeouts
+                        binding.voiceProgress.postDelayed({
+                            if (viewModel.isListening.value == true) {
+                                startListening()
+                            }
+                        }, 300)
+                    }
+                    else -> {
+                        // For unknown errors, retry silently
+                        binding.voiceProgress.postDelayed({
+                            if (viewModel.isListening.value == true) {
+                                recreateSpeechRecognizer()
+                                startListening()
+                            }
+                        }, 500)
+                    }
                 }
-                
-                stopListening()
-                Snackbar.make(binding.root, errorMessage, Snackbar.LENGTH_SHORT).show()
+
+                // Don't show Snackbar errors at all - they're causing the blinking
+                // Instead log the error for debugging purposes
+                println("Speech recognition error: $error")
             }
 
             override fun onResults(results: Bundle?) {
@@ -129,20 +213,57 @@ class MainActivity : AppCompatActivity() {
         })
     }
     
+    /**
+     * Recreates the speech recognizer to fix busy errors
+     */
+    private fun recreateSpeechRecognizer() {
+        if (::speechRecognizer.isInitialized) {
+            speechRecognizer.destroy()
+        }
+        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
+        setupSpeechRecognizer()
+    }
+
     private fun startListening() {
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-            Toast.makeText(this, R.string.error_speech_recognition, Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Speech recognition is not available on this device", Toast.LENGTH_LONG).show()
             return
         }
         
+        // Clear any previous recognizer to avoid issues
+        if (::speechRecognizer.isInitialized) {
+            speechRecognizer.destroy()
+        }
+        setupSpeechRecognizer()
+
+        // Show user that app is listening
+        binding.statusText.setText(R.string.listening)
+        binding.voiceProgress.visibility = View.VISIBLE
+        Toast.makeText(this, "Listening... Please speak now", Toast.LENGTH_SHORT).show()
+
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            // Increase timeout values to give more time for speech
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 300L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L)
+            // Try with both online and offline recognition
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false)
         }
         
-        speechRecognizer.startListening(intent)
+        try {
+            viewModel.setListening(true)
+            speechRecognizer.startListening(intent)
+            println("DEBUG: Speech recognizer started")
+        } catch (e: Exception) {
+            Toast.makeText(this, "Speech recognition error: ${e.message}", Toast.LENGTH_LONG).show()
+            println("DEBUG: Speech recognition failed to start: ${e.message}")
+            viewModel.setListening(false)
+            binding.voiceProgress.visibility = View.INVISIBLE
+        }
     }
     
     private fun stopListening() {
@@ -218,4 +339,4 @@ class MainActivity : AppCompatActivity() {
             speechRecognizer.destroy()
         }
     }
-} 
+}

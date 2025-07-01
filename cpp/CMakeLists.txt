@@ -58,11 +58,11 @@ elseif(APPLE)
     target_link_libraries(voice_assist_desktop PRIVATE ${CORE_AUDIO} ${AUDIO_TOOLBOX})
 elseif(WIN32)
     # Windows-specific libraries
-    target_link_libraries(voice_assist_desktop PRIVATE winmm)
+    target_link_libraries(voice_assist_desktop PRIVATE winmm ole32 sapi)
 endif()
 
 # Tests configuration
 if(BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
-endif() 
+endif()
