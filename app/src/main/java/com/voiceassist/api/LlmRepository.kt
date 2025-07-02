@@ -48,24 +48,21 @@ class LlmRepository {
 
             val response = llmService.generateContent(request, apiKey)
 
-            if (response.isSuccessful && response.body() != null) {
-                val responseBody = response.body()!!
+            if (!response.isSuccessful || response.body() == null) {
+                return@withContext Result.failure(Exception("API Error: ${response.errorBody()?.string() ?: "Unknown error"}"))
+            }
 
-                if (responseBody.candidates.isNullOrEmpty()) {
-                    responseBody.promptFeedback?.let {
-                        val blockReason = it.blockReason ?: "Unknown reason"
-                        return@withContext Result.failure(Exception("Request blocked by API for safety reasons: $blockReason"))
-                    }
-                    return@withContext Result.failure(Exception("No response from assistant"))
-                }
+            val responseBody = response.body()!!
 
-                if (responseBody.candidates.isNotEmpty() && responseBody.candidates[0].content.parts.isNotEmpty()) {
-                    Result.success(responseBody.candidates[0].content.parts[0].text)
-                } else {
-                    Result.failure(Exception("No response from assistant"))
-                }
+            responseBody.promptFeedback?.let {
+                val blockReason = it.blockReason ?: "Unknown reason"
+                return@withContext Result.failure(Exception("Request blocked by API for safety reasons: $blockReason"))
+            }
+
+            if (responseBody.candidates.isNotEmpty() && responseBody.candidates[0].content.parts.isNotEmpty()) {
+                Result.success(responseBody.candidates[0].content.parts[0].text)
             } else {
-                Result.failure(Exception("API Error: ${response.errorBody()?.string()}"))
+                Result.failure(Exception("No response from assistant"))
             }
         } catch (e: Exception) {
             Result.failure(e)
